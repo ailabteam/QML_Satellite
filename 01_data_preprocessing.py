@@ -1,4 +1,4 @@
-# 01_data_preprocessing.py
+# 01_data_preprocessing.py (v2 - Sửa lỗi inhomogeneous shape)
 
 import numpy as np
 import pandas as pd
@@ -20,41 +20,56 @@ TRAIN_RATIO_FOR_VALIDATION = 0.1
 os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 os.makedirs(FIGURES_DIR, exist_ok=True)
 
-print("--- Giai đoạn 2: Khám phá và Tiền xử lý Dữ liệu ---")
+print("--- Giai đoạn 2: Khám phá và Tiền xử lý Dữ liệu (v2) ---")
 
-# --- BƯỚC 2.1: TẢI VÀ GỘP DỮ LIỆU ---
-def load_and_merge_data(path):
-    all_files = sorted([f for f in os.listdir(path) if f.endswith('.npy')])
-    print(f"Tìm thấy {len(all_files)} kênh trong {path}")
+# --- BƯỚC 2.1: TẢI, CẮT BỚT VÀ GỘP DỮ LIỆU ---
+def load_and_process_data(train_path, test_path):
+    train_files = sorted([f for f in os.listdir(train_path) if f.endswith('.npy')])
+    test_files = sorted([f for f in os.listdir(test_path) if f.endswith('.npy')])
     
-    merged_data = []
-    channel_names = []
+    assert train_files == test_files, "Tên file trong train và test không khớp!"
+    channel_names = [f.replace('.npy', '') for f in train_files]
+    print(f"Tìm thấy {len(channel_names)} kênh.")
+
+    train_data_list = []
+    test_data_list = []
     
-    for filename in tqdm.tqdm(all_files, desc=f"Đang tải dữ liệu từ {path}"):
-        channel_name = filename.replace('.npy', '')
-        data = np.load(os.path.join(path, filename))
+    # === THAY ĐỔI 1: Tải tất cả dữ liệu vào list trước ===
+    print("Đang tải dữ liệu thô...")
+    for filename in tqdm.tqdm(train_files):
+        train_d = np.load(os.path.join(train_path, filename))
+        test_d = np.load(os.path.join(test_path, filename))
         
-        # Chỉ lấy cột đầu tiên chứa giá trị telemetry thực tế
-        if data.ndim > 1:
-            merged_data.append(data[:, 0])
-        else:
-            merged_data.append(data)
+        train_data_list.append(train_d[:, 0] if train_d.ndim > 1 else train_d)
+        test_data_list.append(test_d[:, 0] if test_d.ndim > 1 else test_d)
         
-        channel_names.append(channel_name)
-        
-    return np.array(merged_data).T, channel_names
+    # === THAY ĐỔI 2: Tìm độ dài ngắn nhất và cắt bớt ===
+    min_train_len = min(len(d) for d in train_data_list)
+    min_test_len = min(len(d) for d in test_data_list)
+    
+    print(f"\nĐộ dài chuỗi train ngắn nhất: {min_train_len}")
+    print(f"Độ dài chuỗi test ngắn nhất: {min_test_len}")
 
-train_data, train_channels = load_and_merge_data(TRAIN_DIR)
-test_data, test_channels = load_and_merge_data(TEST_DIR)
+    train_truncated = [d[:min_train_len] for d in train_data_list]
+    test_truncated = [d[:min_test_len] for d in test_data_list]
+    
+    # === THAY ĐỔI 3: Gộp lại sau khi đã có cùng độ dài ===
+    train_data = np.array(train_truncated).T
+    test_data = np.array(test_truncated).T
+    
+    return train_data, test_data, channel_names
 
-print(f"Hình dạng dữ liệu train đã gộp: {train_data.shape}")
+train_data, test_data, CHANNELS = load_and_process_data(TRAIN_DIR, TEST_DIR)
+
+print(f"\nHình dạng dữ liệu train đã gộp: {train_data.shape}")
 print(f"Hình dạng dữ liệu test đã gộp: {test_data.shape}")
-assert train_channels == test_channels, "Các kênh trong train và test không khớp!"
-CHANNELS = train_channels
 
+# Tải nhãn bất thường
 anomaly_labels = pd.read_csv('labeled_anomalies.csv')
 print("\nThông tin các chuỗi bất thường đã được gán nhãn:")
 print(anomaly_labels.head())
+
+# --- Phần còn lại của script không thay đổi ---
 
 # --- BƯỚC 2.2: TRỰC QUAN HÓA (LƯU RA FILE) ---
 def plot_channel_data(channel_name, train_data, test_data, anomaly_labels, channels, save_dir):
@@ -78,11 +93,16 @@ def plot_channel_data(channel_name, train_data, test_data, anomaly_labels, chann
     channel_anomalies = anomaly_labels[anomaly_labels['chan_id'] == channel_name]
     if not channel_anomalies.empty:
         sequences_str = channel_anomalies['anomaly_sequences'].iloc[0]
-        sequences = eval(sequences_str)
-        for i, seq in enumerate(sequences):
-            label = f"Bất thường: {channel_anomalies['attack'].iloc[0]}" if i == 0 else ""
-            axes[1].axvspan(seq[0], seq[1], color='red', alpha=0.3, label=label)
-    
+        try:
+            sequences = eval(sequences_str)
+            for i, seq in enumerate(sequences):
+                # Chỉ đánh dấu nếu đoạn bất thường không bị cắt mất
+                if seq[1] <= test_data.shape[0]:
+                    label = f"Bất thường: {channel_anomalies['attack'].iloc[0]}" if i == 0 else ""
+                    axes[1].axvspan(seq[0], seq[1], color='red', alpha=0.3, label=label)
+        except Exception as e:
+            print(f"Lỗi khi xử lý chuỗi bất thường cho kênh {channel_name}: {e}")
+
     handles, labels = axes[1].get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
     if by_label:
